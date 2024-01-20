@@ -1,0 +1,81 @@
+---
+# Find more info here:
+# https://docs.gitlab.com/ee/ci/yaml/
+# https://docs.gitlab.com/ee/ci/yaml/index.html
+# https://gitlab.com/gitlab-org/gitlab/-/blob/master/lib/gitlab/ci/templates/Python.gitlab-ci.yml
+# https://www.youtube.com/watch?v=Jav4vbUrqII&list=PL6iUkDSEH9SumTY7OSLmcMeFmRtQsQvNn
+#
+# Inspirations from:
+# https://gitlab.com/gitlab-org/gitlab-foss/-/blob/master/lib/gitlab/ci/templates/Django.gitlab-ci.yml
+# https://gitlab.com/gitlab-org/gitlab-foss/-/blob/master/lib/gitlab/ci/templates/Docker.gitlab-ci.yml
+
+variables:
+    GIT_STRATEGY: clone
+
+stages:
+    - test   # test on commits and on merge with main 
+    - build  # Docker and push to gitlab container registry
+    - deploy # TODO:
+
+default:
+    image: ubuntu:22.04
+
+    # Pick zero or more services to be used on all builds.
+    # Only needed when using a docker container to run your tests in.
+    # Check out: https://docs.gitlab.com/ee/ci/services/index.html
+    # The mysql service needs some variables too.
+    # See https://hub.docker.com/_/mysql for possible mysql env variables
+    # Note that when using a service in GitLab CI/CD that needs environment
+    # variables to run, only variables defined in .gitlab-ci.yml are passed
+    # to the service and variables defined in the GitLab UI are not.
+    # https://gitlab.com/gitlab-org/gitlab/-/issues/30178
+
+    # services:
+    #   - mysql:8.0
+    #
+    # This folder is cached between builds
+    # http://docs.gitlab.com/ee/ci/yaml/README.html#cache
+    cache:
+        paths:
+            - ~/.cache/pip/
+    before_script:
+        - apt-get update -qy && apt-get upgrade -y
+        - apt-get install -y apt-utils net-tools
+        - apt-get install -y python3.11 python3.11-dev python3-pip
+        - pip3 install -r requirements.txt
+
+django-tests:
+    stage: test
+    only:
+        - merge_requests
+    script:
+        - pip install tox black
+        - black src tests --check --verbose --diff --color
+        - tox -e py311 -- --junitxml=report.xml
+    artifacts:
+        when: always
+        reports:
+            junit: report.xml
+
+
+docker-build:
+    # Use the official docker image.
+    image: docker:cli
+    stage: build
+    only:
+        - main
+
+    services:
+        - docker:dind
+    variables:
+        DOCKER_IMAGE_NAME: $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG
+    before_script:
+        - apk update && apk add git
+        - >-
+          docker login
+          -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
+    script:
+        - >-
+          docker build --platform linux/amd64 --pull
+          -t "$DOCKER_IMAGE_NAME" .
+        - docker push "$DOCKER_IMAGE_NAME"
